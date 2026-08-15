@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Attendance</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+  <style>
+    :root { --primary: #4a86e8; --success: #22c55e; --danger: #ef4444; }
+    body { margin: 0; font-family: 'Segoe UI', Roboto, -apple-system, sans-serif; }
+    .page {
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(160deg, var(--primary) 0%, #7fa9ee 100%); padding: 16px;
+    }
+    .card-box {
+      background: #fff; border-radius: 18px; max-width: 420px; width: 100%;
+      padding: 28px; box-shadow: 0 20px 50px rgba(0,0,0,.2); text-align: center;
+    }
+    .result-icon { font-size: 56px; margin-bottom: 10px; }
+    .result-icon.success { color: var(--success); }
+    .result-icon.error { color: var(--danger); }
+    .status-pill { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; display: inline-block; }
+    .badge-status-Active,.badge-status-OnTime,.badge-status-CHECKIN,.badge-status-CHECKOUT { background:#dcfce7; color:#166534; }
+    .badge-status-Late { background:#fef3c7; color:#92400e; }
+    .badge-status-Inactive { background:#fee2e2; color:#991b1b; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="card-box" id="card">
+
+      <div id="state-no-token">
+        <i class="bi bi-qr-code-scan result-icon"></i>
+        <h4>Employee Attendance</h4>
+        <p class="text-muted">Please scan your personal QR code to mark attendance. This page must be opened via a valid QR scan.</p>
+      </div>
+
+      <div id="state-loading" style="display:none;">
+        <div class="spinner-border text-primary my-3" role="status"></div>
+        <h5 id="loadingText">Requesting your location…</h5>
+        <p class="text-muted small">Please allow location access to mark attendance.</p>
+      </div>
+
+      <div id="state-success" style="display:none;">
+        <i class="bi bi-check-circle-fill result-icon success"></i>
+        <h4 id="successTitle">Attendance Recorded Successfully</h4>
+        <table class="table table-borderless text-start mt-3">
+          <tbody>
+            <tr><td class="text-muted">Employee</td><td class="fw-semibold" id="resName"></td></tr>
+            <tr><td class="text-muted">Employee ID</td><td class="fw-semibold" id="resId"></td></tr>
+            <tr><td class="text-muted">Date</td><td class="fw-semibold" id="resDate"></td></tr>
+            <tr><td class="text-muted">Time</td><td class="fw-semibold" id="resTime"></td></tr>
+            <tr><td class="text-muted">Status</td><td><span class="status-pill" id="resStatus"></span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div id="state-error" style="display:none;">
+        <i class="bi bi-x-circle-fill result-icon error"></i>
+        <h4>Attendance Not Recorded</h4>
+        <p class="text-muted" id="errorMessage"></p>
+        <button class="btn btn-primary mt-2" onclick="location.reload()">Try Again</button>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    // =====================================================================
+    // REQUIRED SETUP: paste your deployed Apps Script Web App URL below
+    // (same one used in scanner.html) — ending in /exec
+    // =====================================================================
+    var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx90PbeybqhcB4Xtp-K7WE4poNeOP-ooaCeccLO2PfjaHNUK6X4Px3UcQ8BM9Rz8udS/exec?page=admin';
+
+    var TOKEN = new URLSearchParams(window.location.search).get('token');
+
+    function show(id) {
+      ['state-no-token', 'state-loading', 'state-success', 'state-error'].forEach(function (s) {
+        document.getElementById(s).style.display = (s === id) ? 'block' : 'none';
+      });
+    }
+
+    function statusClass(status) {
+      return 'badge-status-' + String(status).replace(/\s+/g, '');
+    }
+
+    async function getPublicIp() {
+      try {
+        var res = await fetch('https://api.ipify.org?format=json');
+        var data = await res.json();
+        return data.ip;
+      } catch (e) { return ''; }
+    }
+
+    /**
+     * A persistent, random ID unique to THIS browser install, stored in
+     * localStorage on this stable GitHub Pages domain — this is the
+     * whole point of hosting this page here instead of on Apps Script,
+     * where the underlying content domain can silently change and reset
+     * this value even on the same physical phone.
+     */
+    function getDeviceId() {
+      var key = 'attnd_device_id';
+      var id = localStorage.getItem(key);
+      if (!id) {
+        id = (crypto.randomUUID ? crypto.randomUUID() : 'dev-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+        localStorage.setItem(key, id);
+      }
+      return id;
+    }
+
+    function markAttendance() {
+      if (!navigator.geolocation) {
+        renderError('Geolocation is not supported by this browser.');
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(async function (pos) {
+        document.getElementById('loadingText').innerText = 'Recording attendance…';
+        var ip = await getPublicIp();
+        var qs = new URLSearchParams({
+          action: 'attend',
+          token: TOKEN,
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          device: navigator.userAgent,
+          ip: ip,
+          deviceId: getDeviceId()
+        });
+
+        try {
+          var res = await fetch(APPS_SCRIPT_URL + '?' + qs.toString());
+          var result = await res.json();
+          renderResult(result);
+        } catch (err) {
+          renderError('Could not reach the server: ' + err.message);
+        }
+      }, function () {
+        renderError('Location access denied. Please enable location permissions and rescan the QR code.');
+      }, { enableHighAccuracy: true, timeout: 15000 });
+    }
+
+    function renderResult(result) {
+      if (!result.success) { renderError(result.message); return; }
+      document.getElementById('successTitle').innerText =
+        result.code === 'CHECK_IN' ? '✔ Check-In Recorded Successfully' : '✔ Check-Out Recorded Successfully';
+      document.getElementById('resName').innerText = result.data.employeeName;
+      document.getElementById('resId').innerText = result.data.employeeId;
+      document.getElementById('resDate').innerText = result.data.date;
+      document.getElementById('resTime').innerText = result.data.time;
+      var statusEl = document.getElementById('resStatus');
+      statusEl.innerText = result.data.status || result.code.replace('_', ' ');
+      statusEl.className = 'status-pill ' + statusClass(result.data.status || result.code);
+      show('state-success');
+    }
+
+    function renderError(message) {
+      document.getElementById('errorMessage').innerText = message;
+      show('state-error');
+    }
+
+    (function init() {
+      if (APPS_SCRIPT_URL.indexOf('PASTE_YOUR_WEB_APP_URL_HERE') !== -1) {
+        renderError('Setup needed: open this file and paste your Apps Script Web App URL into the APPS_SCRIPT_URL line near the top of the script.');
+        return;
+      }
+      if (!TOKEN) { show('state-no-token'); return; }
+      show('state-loading');
+      markAttendance();
+    })();
+  </script>
+</body>
+</html>

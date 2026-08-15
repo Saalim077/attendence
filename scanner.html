@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Attendance Kiosk Scanner</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+  <style>
+    :root { --primary: #4a86e8; --success: #22c55e; --danger: #ef4444; }
+    body { margin: 0; font-family: 'Segoe UI', Roboto, -apple-system, sans-serif; }
+    .page {
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(160deg, var(--primary) 0%, #7fa9ee 100%); padding: 16px;
+    }
+    .card-box {
+      background: #fff; border-radius: 18px; max-width: 460px; width: 100%;
+      padding: 28px; box-shadow: 0 20px 50px rgba(0,0,0,.2); text-align: center;
+    }
+    #qr-reader { border-radius: 12px; overflow: hidden; }
+    .result-icon { font-size: 56px; margin-bottom: 8px; }
+    .result-icon.success { color: var(--success); }
+    .result-icon.error { color: var(--danger); }
+    .status-pill { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; display: inline-block; }
+    .badge-status-Active,.badge-status-OnTime,.badge-status-CHECKIN,.badge-status-CHECKOUT { background:#dcfce7; color:#166534; }
+    .badge-status-Late { background:#fef3c7; color:#92400e; }
+    .badge-status-Inactive { background:#fee2e2; color:#991b1b; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="card-box" id="card">
+
+      <div id="state-scan">
+        <h4 class="mb-3"><i class="bi bi-camera"></i> Attendance Kiosk</h4>
+        <div id="qr-reader" style="width:100%"></div>
+        <p class="text-muted small mt-2">Point an employee's QR code at the camera. Scanning happens automatically.</p>
+        <div id="scanStatus" class="alert alert-light mt-2" style="display:none;"></div>
+      </div>
+
+      <div id="state-loading" style="display:none;">
+        <div class="spinner-border text-primary my-4" role="status"></div>
+        <h5 id="loadingText">Requesting your location…</h5>
+      </div>
+
+      <div id="state-success" style="display:none;">
+        <i class="bi bi-check-circle-fill result-icon success"></i>
+        <h4 id="successTitle">Attendance Recorded</h4>
+        <table class="table table-borderless text-start mt-3">
+          <tbody>
+            <tr><td class="text-muted">Employee</td><td class="fw-semibold" id="resName"></td></tr>
+            <tr><td class="text-muted">Employee ID</td><td class="fw-semibold" id="resId"></td></tr>
+            <tr><td class="text-muted">Date</td><td class="fw-semibold" id="resDate"></td></tr>
+            <tr><td class="text-muted">Time</td><td class="fw-semibold" id="resTime"></td></tr>
+            <tr><td class="text-muted">Status</td><td><span class="status-pill" id="resStatus"></span></td></tr>
+          </tbody>
+        </table>
+        <button class="btn btn-primary w-100 mt-2" onclick="location.reload()">Scan Next Employee</button>
+      </div>
+
+      <div id="state-error" style="display:none;">
+        <i class="bi bi-x-circle-fill result-icon error"></i>
+        <h4>Attendance Not Recorded</h4>
+        <p class="text-muted" id="errorMessage"></p>
+        <button class="btn btn-primary w-100 mt-2" onclick="location.reload()">Try Again</button>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script>
+    // =====================================================================
+    // REQUIRED SETUP: paste your deployed Apps Script Web App URL below.
+    // It's the same URL you use for ?page=admin, just without any
+    // parameters — ending in /exec
+    // =====================================================================
+    var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx90PbeybqhcB4Xtp-K7WE4poNeOP-ooaCeccLO2PfjaHNUK6X4Px3UcQ8BM9Rz8udS/exec?page=admin';
+    // Example:
+    // var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz.../exec';
+
+    function show(id) {
+      ['state-scan', 'state-loading', 'state-success', 'state-error'].forEach(function (s) {
+        document.getElementById(s).style.display = (s === id) ? 'block' : 'none';
+      });
+    }
+
+    function setStatus(message, type) {
+      var el = document.getElementById('scanStatus');
+      el.style.display = 'block';
+      el.className = 'alert alert-' + (type || 'light') + ' mt-2';
+      el.innerText = message;
+    }
+
+    function statusClass(status) {
+      return 'badge-status-' + String(status).replace(/\s+/g, '');
+    }
+
+    async function getPublicIp() {
+      try {
+        var res = await fetch('https://api.ipify.org?format=json');
+        var data = await res.json();
+        return data.ip;
+      } catch (e) { return ''; }
+    }
+
+    function getDeviceId() {
+      var key = 'attnd_kiosk_device_id';
+      var id = localStorage.getItem(key);
+      if (!id) {
+        id = (crypto.randomUUID ? crypto.randomUUID() : 'dev-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+        localStorage.setItem(key, id);
+      }
+      return id;
+    }
+
+    function extractToken(decodedText) {
+      try {
+        var url = new URL(decodedText);
+        return url.searchParams.get('token');
+      } catch (e) {
+        return null; // not a valid URL / not one of our QR codes
+      }
+    }
+
+    async function handleDecoded(decodedText) {
+      var token = extractToken(decodedText);
+      if (!token) {
+        setStatus('That QR code is not a valid employee attendance code.', 'danger');
+        return;
+      }
+
+      if (scanner) { scanner.pause(true); }
+      show('state-loading');
+
+      if (!navigator.geolocation) {
+        renderError('Geolocation is not supported by this browser.');
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(async function (pos) {
+        document.getElementById('loadingText').innerText = 'Recording attendance…';
+        var ip = await getPublicIp();
+        var qs = new URLSearchParams({
+          action: 'attend',
+          token: token,
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          device: navigator.userAgent,
+          ip: ip,
+          deviceId: getDeviceId()
+        });
+
+        try {
+          var res = await fetch(APPS_SCRIPT_URL + '?' + qs.toString());
+          var result = await res.json();
+          renderResult(result);
+        } catch (err) {
+          renderError('Could not reach the server: ' + err.message);
+        }
+      }, function () {
+        renderError('Location access denied. Please allow location permissions and try again.');
+      }, { enableHighAccuracy: true, timeout: 15000 });
+    }
+
+    function renderResult(result) {
+      if (!result.success) { renderError(result.message); return; }
+      document.getElementById('successTitle').innerText =
+        result.code === 'CHECK_IN' ? '✔ Check-In Recorded' : '✔ Check-Out Recorded';
+      document.getElementById('resName').innerText = result.data.employeeName;
+      document.getElementById('resId').innerText = result.data.employeeId;
+      document.getElementById('resDate').innerText = result.data.date;
+      document.getElementById('resTime').innerText = result.data.time;
+      var statusEl = document.getElementById('resStatus');
+      statusEl.innerText = result.data.status || result.code.replace('_', ' ');
+      statusEl.className = 'status-pill ' + statusClass(result.data.status || result.code);
+      show('state-success');
+    }
+
+    function renderError(message) {
+      document.getElementById('errorMessage').innerText = message;
+      show('state-error');
+    }
+
+    var scanner = null;
+    function startScanner() {
+      if (APPS_SCRIPT_URL.indexOf('PASTE_YOUR_WEB_APP_URL_HERE') !== -1) {
+        setStatus('Setup needed: open this file and paste your Apps Script Web App URL into the APPS_SCRIPT_URL line near the bottom of the script.', 'danger');
+        return;
+      }
+      scanner = new Html5Qrcode('qr-reader');
+      Html5Qrcode.getCameras().then(function (cameras) {
+        if (!cameras || !cameras.length) {
+          setStatus('No camera found on this device.', 'danger');
+          return;
+        }
+        var camId = cameras.length > 1 ? cameras[cameras.length - 1].id : cameras[0].id;
+        scanner.start(camId, { fps: 10, qrbox: 240 }, handleDecoded, function () {}).catch(function (err) {
+          setStatus('Could not start camera: ' + err, 'danger');
+        });
+      }).catch(function (err) {
+        setStatus('Camera permission denied or unavailable: ' + err, 'danger');
+      });
+    }
+
+    startScanner();
+  </script>
+</body>
+</html>
